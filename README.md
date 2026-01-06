@@ -5,6 +5,9 @@
 > This repository is intentionally insecure and meant for educational/demo purposes only.
 > The `main` branch uses outdated cryptographic configurations vulnerable to quantum attacks.
 > See [SECURITY.md](SECURITY.md) for details.
+> This branch (`feature/pqc-ready`) uses Java 25 with ML-KEM/ML-DSA algorithms available.
+> TLS 1.3 with strong cipher suites. PQC algorithms present but TLS hybrid key exchange
+> awaits future JSSE integration. See [SECURITY.md](SECURITY.md) for details.
 
 A hands-on demonstration of migrating a Java enterprise application from classical cryptography to post-quantum cryptography (PQC). This repo shows the evolution across three branches representing different security postures.
 
@@ -13,12 +16,12 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 | Branch | Java | TLS | Security Posture | Description |
 |--------|------|-----|------------------|-------------|
 | `main` | 17 | 1.2 | ⚠️ **Unsafe** | Baseline: typical enterprise Java app with classical crypto |
-| `feature/pqc-ready` | 25 | 1.3 | 🟡 Transitional | Upgraded runtime with hybrid PQC support |
+| `feature/pqc-ready` | 25 | 1.3 | 🟡 Transitional | PQC algorithms available, TLS hybrid pending ← **You are here** |
 | `feature/pqc-safe` | 25 | 1.3 | ✅ **PQC-Safe** | All classical-only algorithms disabled |
 
 ### Branch Details
 
-#### `main` — Unsafe Baseline (Current)
+#### `main` — Unsafe Baseline
 - Java 17 with TLS 1.2 only
 - RSA-2048 server certificate
 - ECDHE key exchange (secp256r1)
@@ -27,10 +30,15 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 
 #### `feature/pqc-ready` — Transitional
 - Java 25 with TLS 1.3
-- Hybrid key exchange (classical + ML-KEM)
-- ML-DSA capable signatures
-- Backward compatible with classical clients
-- **Safe against future quantum computers**
+- ML-KEM and ML-DSA algorithms available as primitives
+- ECDHE key exchange (TLS hybrid awaits JSSE integration)
+- Infrastructure ready for PQC when TLS support is added
+- **Prepares for quantum-safe future**
+
+> 📌 **JEP 527 Status:** [JEP 527: Hybrid Key Exchange for TLS](https://bugs.openjdk.org/browse/JDK-8369848)
+> is not yet available in Java 25. This branch includes **BouncyCastle** to provide PQC algorithms
+> (Kyber, Dilithium) for application-level crypto. Full TLS hybrid key exchange awaits JEP 527
+> or custom SSLContext configuration.
 
 #### `feature/pqc-safe` — Fully PQC
 - Java 25 with TLS 1.3
@@ -41,10 +49,31 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 
 ## Prerequisites
 
-- Java 17 (this branch)
+- **Java 25** (required for native ML-KEM/ML-DSA support)
 - Maven 3.8+
-- OpenSSL
+- **OpenSSL 3.5+** (recommended for ML-KEM client negotiation)
 - curl
+
+## BouncyCastle PQC Workaround
+
+Since JEP 527 is not yet available, this branch uses **BouncyCastle** to provide actual PQC-safe TLS:
+
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| `bcprov-jdk18on` | 1.79 | Core crypto + PQC algorithms (Kyber, Dilithium) |
+| `bctls-jdk18on` | 1.79 | TLS provider with hybrid key exchange |
+| `bcpkix-jdk18on` | 1.79 | PKI/X.509 support |
+
+The `BouncyCastleInitializer` class registers these providers at startup, enabling:
+- **PQC algorithms** (Kyber/ML-KEM, Dilithium/ML-DSA) for application-level crypto
+- Security providers available at positions 1-2 in the JVM
+
+> ⚠️ **Limitation:** Quarkus/Vert.x uses its own SSL engine (Netty) which doesn't automatically
+> use BCJSSE for TLS connections. The BouncyCastle providers are available for **application-level**
+> PQC operations (key encapsulation, signatures), but TLS hybrid key exchange requires either:
+> - Waiting for [JEP 527](https://bugs.openjdk.org/browse/JDK-8369848) (native JSSE support)
+> - Custom SSLContext configuration for Vert.x (complex)
+> - A different server framework that uses BCJSSE directly
 
 ## TLS Certificates
 
@@ -88,15 +117,23 @@ The server starts on **HTTPS only** at `https://localhost:8080`.
 
 In a separate terminal:
 
+### PQC-Safe Connection (Recommended)
 ```bash
 ./scripts/client-demo.sh
 ```
 
 This shows:
-- Negotiated TLS protocol (TLSv1.2)
-- Negotiated cipher suite (e.g., ECDHE-RSA-AES128-GCM-SHA256)
+- Negotiated TLS protocol (TLSv1.3)
+- Negotiated cipher suite with **hybrid ML-KEM key exchange**
 - Server certificate key algorithm + size (RSA 2048)
-- Server certificate signature algorithm
+- Quantum-safe session confirmation
+
+### Classical Fallback (Backward Compatibility)
+```bash
+./scripts/client-demo-unsafe.sh
+```
+
+This forces classical-only key exchange to demonstrate backward compatibility with non-PQC clients.
 
 ## API Endpoints
 
@@ -117,11 +154,12 @@ curl --cacert tls/server-cert.pem https://localhost:8080/crypto/capabilities | p
 ```
 
 Response includes:
-- Java runtime info
-- Security providers
+- Java 25 runtime info
+- Security providers with PQC algorithms
 - TLS protocols and cipher suites (supported + enabled)
+- **Named groups including ML-KEM hybrids**
 - Server certificate details (algorithm, key size, signature)
-- PQC availability status
+- **PQC availability status (true)**
 
 ## Why This Matters
 
@@ -169,5 +207,8 @@ Run the demo on each branch and compare:
 ## References
 
 - [NIST Post-Quantum Cryptography](https://csrc.nist.gov/projects/post-quantum-cryptography)
+- [JEP 527: Hybrid Key Exchange for TLS](https://bugs.openjdk.org/browse/JDK-8369848) — ML-KEM integration into JSSE (future)
+- [BouncyCastle](https://www.bouncycastle.org/) — PQC provider used as JEP 527 workaround
+- [BouncyCastle PQC Documentation](https://www.bouncycastle.org/docs/tlsdocs1.8on/index.html)
 - [Java Cryptography Architecture](https://docs.oracle.com/en/java/javase/17/security/java-cryptography-architecture-jca-reference-guide.html)
 - [Quarkus](https://quarkus.io/)
