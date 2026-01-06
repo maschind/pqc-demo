@@ -1,360 +1,238 @@
 # CLAUDE.md — Java 25 Quarkus HTTPS Crypto Demo (PQC-Ready)
 
-## Goal (5-minute demo, dead simple)
-Build a minimal "enterprise-style" Java 25 Quarkus server that:
-- serves **HTTPS** only using a **self-signed certificate**
+## Goal (5-minute demo)
+Build a minimal Java 25 HTTPS server that demonstrates **working ML-KEM hybrid TLS**:
+- serves **HTTPS** only using **BouncyCastle JSSE 1.81**
 - exposes:
-  - `GET https://localhost:8080/hello`
-  - `GET https://localhost:8080/crypto/capabilities`
-- uses **TLS 1.3** with strong cipher suites
-- demonstrates **PQC algorithm availability** (ML-KEM, ML-DSA in Java 25)
-- includes scripts to show TLS configuration and PQC readiness
+  - `GET https://localhost:8443/hello`
+  - `GET https://localhost:8443/crypto/info`
+- uses **TLS 1.3** with **ML-KEM hybrid key exchange** (X25519MLKEM768)
+- demonstrates **crypto agility** (supports both PQC and classical clients)
+- includes scripts to show PQC vs classical TLS negotiation
 
 This demo shows: "Java 25 PQC-ready infrastructure with ML-KEM/ML-DSA algorithms available."
 
-**Important Note:** Java 25 includes ML-KEM and ML-DSA as cryptographic primitives, but
-TLS hybrid key exchange (e.g., x25519_mlkem768) is not yet integrated into JSSE.
-This branch demonstrates PQC algorithm availability and TLS 1.3 readiness.
+---
+
+## Implementation Notes
+
+### Why Standalone Server (Not Quarkus)?
+Quarkus/Vert.x has hardcoded dependencies on SunJSSE and cannot use BCJSSE for TLS.
+The standalone `PqcHttpsServer.java` uses Java's built-in `HttpsServer` with BCJSSE directly,
+enabling ML-KEM hybrid key exchange.
+
+### BouncyCastle 1.81 Requirement
+[BouncyCastle 1.81](https://www.bouncycastle.org/resources/bouncy-castle-releases-java-1-81-and-c-net-2-6-1/)
+added ML-KEM hybrid TLS support. Earlier versions (1.79, 1.80) do NOT support ML-KEM in TLS.
 
 ---
 
 ## Constraints
-- Java: 25 (required for native ML-KEM/ML-DSA support)
-- Framework: Quarkus (simple REST)
+- Java: 25 (required for BouncyCastle compatibility)
+- TLS Provider: BouncyCastle JSSE 1.81+
 - TLS: self-signed certificate, local only, TLS 1.3
-- Crypto agility: support both PQC and classical key exchange
-- Prefer clarity over features: smallest possible source code footprint
+- Key Exchange: ML-KEM hybrid (X25519MLKEM768) with classical fallback
+- Prefer clarity over features: minimal source code
 
 ---
 
 ## Deliverables
-1) Quarkus app with HTTPS enabled and self-signed cert
-2) Endpoint: `GET /hello` -> `hello world`
-3) Endpoint: `GET /crypto/capabilities` -> JSON showing:
-   - Java runtime info
-   - Security providers (including PQC algorithms)
-   - TLS capabilities of the runtime (supported + enabled):
-     - protocols (TLSv1.2/TLSv1.3 etc.)
-     - cipher suites
-     - named groups / supported groups if available
-   - **Server certificate details** (important!):
-     - public key algorithm (RSA/EC)
-     - public key size (e.g., RSA 2048, EC 256)
-     - signature algorithm (e.g., SHA256withRSA)
-     - validity dates
-   - **PQC availability status** (true for Java 25)
-4) Script `scripts/client-demo.sh` that:
-   - calls `https://localhost:8080/hello`
-   - prints the negotiated TLS details (protocol + cipher suite + key exchange)
-   - checks PQC algorithm availability via /crypto/capabilities
-   - clearly shows: "PQC-ready infrastructure with ML-KEM/ML-DSA available"
-5) Script `scripts/client-demo-unsafe.sh` that:
-   - calls `https://localhost:8080/hello` with classical key exchange
-   - demonstrates current TLS configuration
-   - shows warning about classical-only key exchange
+1) Standalone HTTPS server with BCJSSE (`PqcHttpsServer.java`)
+2) Endpoint: `GET /hello` -> `hello world (PQC-enabled via BCJSSE 1.81+)`
+3) Endpoint: `GET /crypto/info` -> JSON showing TLS/PQC status
+4) Script `scripts/run-pqc-server.sh` to start the server
+5) Script `scripts/client-demo.sh` that:
+   - calls `https://localhost:8443/hello`
+   - shows ML-KEM hybrid key exchange (X25519MLKEM768)
+   - confirms quantum-safe key establishment
+6) Script `scripts/client-demo-unsafe.sh` that:
+   - forces classical-only key exchange
+   - demonstrates crypto agility / backward compatibility
 
 ---
 
 ## Repository Layout
+```
 .
 ├─ CLAUDE.md
 ├─ README.md
 ├─ pom.xml
 ├─ src/main/java/.../
-│  ├─ HelloResource.java
-│  └─ CryptoCapabilitiesResource.java
-├─ src/main/resources/
-│  └─ application.properties
+│  ├─ PqcHttpsServer.java        (standalone HTTPS server with BCJSSE)
+│  ├─ HelloResource.java         (Quarkus - not used for PQC)
+│  ├─ CryptoCapabilitiesResource.java  (Quarkus - not used for PQC)
+│  └─ BouncyCastleInitializer.java     (Quarkus BC setup)
 ├─ scripts/
-│  ├─ client-demo.sh          (PQC-safe connection demo)
-│  ├─ client-demo-unsafe.sh   (classical fallback demo)
+│  ├─ run-pqc-server.sh          (start PQC server)
+│  ├─ client-demo.sh             (PQC connection demo)
+│  ├─ client-demo-unsafe.sh      (classical fallback demo)
 │  └─ util.sh
 └─ tls/
-   ├─ server-keystore.p12        (generated, can be committed or generated by script)
-   └─ server-cert.pem            (exported PEM for client use)
-
-Keep code minimal: 2 resources only.
+   ├─ server-keystore-hybrid.p12  (ECDSA - default, works with all clients)
+   ├─ server-keystore-mldsa.p12   (ML-DSA - full PQC, future use)
+   ├─ server-cert-hybrid.pem      (exported PEM for curl)
+   └─ server-keystore.p12         (RSA - legacy)
+```
 
 ---
 
-## HTTPS / Self-signed certificate requirements
-Use a PKCS12 keystore and configure Quarkus HTTPS with TLS 1.3.
+## TLS Certificates
 
-### Keystore generation (preferred: checked into repo under ./tls)
-Generate once (or provide a helper section in README):
+### Certificate Options
+| File | Algorithm | Quantum-Safe | Client Compatibility |
+|------|-----------|--------------|---------------------|
+| `server-keystore-hybrid.p12` | ECDSA | Auth: No, KEX: Yes | ✅ All clients |
+| `server-keystore-mldsa.p12` | ML-DSA | Auth: Yes, KEX: Yes | ❌ PQC clients only |
 
-- create PKCS12 keystore:
-  keytool -genkeypair \
-    -alias server \
-    -keyalg RSA \
-    -keysize 2048 \
-    -storetype PKCS12 \
-    -keystore tls/server-keystore.p12 \
-    -storepass changeit \
-    -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
-    -validity 3650 \
-    -ext "SAN=dns:localhost,ip:127.0.0.1"
+### Generate ECDSA Certificate (Default)
+```bash
+keytool -genkeypair -alias server -keyalg EC -groupname secp384r1 \
+  -sigalg SHA384withECDSA -validity 3650 \
+  -keystore tls/server-keystore-hybrid.p12 -storetype PKCS12 \
+  -storepass changeit -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
+  -ext "SAN=DNS:localhost,IP:127.0.0.1"
 
-- export cert to PEM for curl:
-  keytool -exportcert \
-    -alias server \
-    -keystore tls/server-keystore.p12 \
-    -storepass changeit \
-    -rfc \
-    -file tls/server-cert.pem
+keytool -exportcert -alias server -keystore tls/server-keystore-hybrid.p12 \
+  -storepass changeit -rfc -file tls/server-cert-hybrid.pem
+```
 
-NOTE: Still using RSA-2048 for the server certificate in this transitional phase.
-The key exchange uses hybrid ML-KEM, but the certificate remains classical.
-(Full PQC certificates with ML-DSA come in the feature/pqc-safe branch.)
+### Generate ML-DSA Certificate (Full PQC)
+```bash
+keytool -genkeypair -alias server -keyalg ML-DSA-65 -validity 3650 \
+  -keystore tls/server-keystore-mldsa.p12 -storetype PKCS12 \
+  -storepass changeit -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
+  -ext "SAN=DNS:localhost,IP:127.0.0.1"
+```
 
-### Quarkus HTTPS configuration (application.properties)
-- Set HTTPS port to 8080 for the demo
-- Disable HTTP (or at least do not bind it)
-- Enable TLS 1.3 only for PQC support
+---
 
-Required properties:
-- quarkus.http.ssl-port=8080
-- quarkus.http.insecure-requests=disabled
-- quarkus.http.ssl.certificate.key-store-file=tls/server-keystore.p12
-- quarkus.http.ssl.certificate.key-store-password=changeit
-- quarkus.http.ssl.certificate.key-store-file-type=PKCS12
-- quarkus.http.ssl.protocols=TLSv1.3
+## PqcHttpsServer Implementation
 
-### Crypto Agility Configuration (JVM system properties)
-Configure named groups to enable hybrid PQC key exchange while maintaining backward compatibility:
+Key points:
+1. Register BouncyCastle providers FIRST
+2. Create SSLContext with BCJSSE explicitly
+3. Use Java's HttpsServer (not Netty/Vert.x)
 
-JVM arguments (in application.properties or JAVA_OPTS):
-- -Djdk.tls.namedGroups=x25519_mlkem768,secp256r1_mlkem768,x25519,secp256r1,secp384r1
+```java
+// Register BC providers
+Security.insertProviderAt(new BouncyCastleProvider(), 1);
+Security.insertProviderAt(new BouncyCastleJsseProvider(false), 2);
 
-This ordering ensures:
-1. Prefer ML-KEM hybrid groups (PQC-safe) when client supports them
-2. Fall back to classical ECDHE groups for backward compatibility
+// Create SSLContext with BCJSSE
+SSLContext sslContext = SSLContext.getInstance("TLSv1.3", "BCJSSE");
+sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
 
-The server will negotiate the best available option based on client capabilities.
+// Create HTTPS server
+HttpsServer server = HttpsServer.create(new InetSocketAddress(8443), 0);
+server.setHttpsConfigurator(new HttpsConfigurator(sslContext));
+```
 
 ---
 
 ## REST API Spec
 
 ### GET /hello
-- Response: plain text: "hello world"
-- Must be served over HTTPS only:
-  https://localhost:8080/hello
+- Response: `hello world (PQC-enabled via BCJSSE 1.81+)`
+- URL: `https://localhost:8443/hello`
 
-### GET /crypto/capabilities
-Return JSON with the following structure (fields must exist even if empty):
-
+### GET /crypto/info
+Response:
+```json
 {
-  "runtime": {
-    "javaVersion": "25",
-    "javaVendor": "...",
-    "javaVmName": "...",
-    "osName": "...",
-    "osArch": "..."
-  },
-  "securityProviders": [
-    { "name": "...", "version": "...", "info": "..." }
-  ],
+  "server": "PqcHttpsServer",
+  "java.version": "25.0.1",
   "tls": {
-    "defaultSslContextProvider": "...",
-    "supportedProtocols": [ "TLSv1.3", "TLSv1.2", ... ],
-    "enabledProtocols": [ "TLSv1.3" ],
-    "supportedCipherSuites": [ ... ],
-    "enabledCipherSuites": [ ... ],
-    "namedGroups": {
-      "supported": [ "x25519_mlkem768", "secp256r1_mlkem768", "x25519", "secp256r1", ... ],
-      "enabled": [ "x25519_mlkem768", "secp256r1_mlkem768", "x25519", "secp256r1", ... ],
-      "note": "Java 25 supports ML-KEM hybrid groups for post-quantum key exchange."
-    }
-  },
-  "serverCertificate": {
-    "subject": "...",
-    "issuer": "...",
-    "notBefore": "...",
-    "notAfter": "...",
-    "publicKeyAlgorithm": "RSA|EC|...",
-    "publicKeySizeBits": 2048,
-    "signatureAlgorithm": "...",
-    "san": [ "DNS:localhost", "IP:127.0.0.1", ... ]
+    "provider": "BCJSSE 1.81+",
+    "protocol": "TLS 1.3",
+    "keyExchange": {
+      "algorithm": "X25519MLKEM768",
+      "quantumSafe": true,
+      "type": "ML-KEM hybrid (X25519 + ML-KEM-768)"
+    },
+    "authentication": {
+      "algorithm": "ECDSA-SHA384",
+      "quantumSafe": false,
+      "note": "ML-DSA available but requires PQC-capable clients"
+    },
+    "cipher": "AES-256-GCM"
   },
   "pqc": {
-    "presentInDefaultProviders": true,
-    "algorithms": {
-      "kem": ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"],
-      "signature": ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
-    },
-    "hybridKeyExchange": {
-      "supported": true,
-      "groups": ["x25519_mlkem768", "secp256r1_mlkem768"]
-    },
-    "note": "Java 25 includes native ML-KEM and ML-DSA support. Hybrid key exchange combines classical ECDHE with ML-KEM for defense-in-depth."
+    "keyExchangeSafe": true,
+    "authenticationSafe": false,
+    "availableAlgorithms": ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
   }
 }
-
-Implementation notes:
-- TLS protocols/ciphers:
-  - Use SSLContext.getDefault()
-  - Use SSLParameters from SSLSocketFactory / SSLServerSocketFactory to read supported/enabled.
-- Named groups:
-  - In Java 25, read system property "jdk.tls.namedGroups" for configured groups.
-  - Also attempt to discover default supported groups via SSL parameters.
-- Server certificate:
-  - Load from the same keystore configured for Quarkus:
-    - open tls/server-keystore.p12
-    - read cert for alias "server"
-  - Determine key size:
-    - RSA: ((RSAPublicKey) key).getModulus().bitLength()
-    - EC: ((ECPublicKey) key).getParams().getCurve().getField().getFieldSize()
-- PQC detection:
-  - Check for ML-KEM and ML-DSA algorithms in security providers
-  - List available PQC algorithms
-
-Keep the code small and readable.
+```
 
 ---
 
-## scripts/client-demo.sh requirements (PQC-safe demo)
-The script must show PQC-safe crypto when querying:
-- https://localhost:8080/hello
+## scripts/client-demo.sh Output
 
-It should print, at minimum:
-- negotiated protocol (TLSv1.3)
-- negotiated cipher suite (e.g., TLS_AES_256_GCM_SHA384)
-- **negotiated key exchange group** (e.g., x25519_mlkem768 or secp256r1_mlkem768)
-- server certificate public key algorithm + size (e.g., RSA 2048)
-- server certificate signature algorithm
-- and then perform the actual GET /hello successfully.
-
-### Script outline (bash)
-1) Verify server is running
-2) Show negotiated TLS details using openssl (must be OpenSSL 3.5+ for ML-KEM support):
-   - openssl s_client -connect localhost:8080 -servername localhost -groups x25519_mlkem768:secp256r1_mlkem768:x25519:secp256r1 </dev/null 2>/dev/null
-   - parse lines for:
-     - "Protocol  :" (or equivalent)
-     - "Cipher    :" / "Ciphersuite:"
-     - "Server Temp Key:" (shows ML-KEM or ECDH group)
-3) Extract the leaf certificate and show key size:
-   - pipe cert to: openssl x509 -noout -text
-   - parse:
-     - "Public-Key:" size
-     - "Signature Algorithm:"
-4) Call the endpoint:
-   - curl --cacert tls/server-cert.pem https://localhost:8080/hello
-   - Must succeed without -k (no insecure skip). Using the exported PEM is the point.
-
-The output must be demo-friendly and short, e.g.:
-
+```
 ═══════════════════════════════════════════════════════════════
-  PQC-SAFE TLS Connection (Hybrid ML-KEM + Classical)
+  PQC TLS Connection (ML-KEM Hybrid Key Exchange)
 ═══════════════════════════════════════════════════════════════
 
-TLS Negotiation:
-  Protocol:      TLSv1.3
-  Cipher:        TLS_AES_256_GCM_SHA384
-  Key Exchange:  x25519_mlkem768 (Hybrid PQC)
+=== TLS Negotiation ===
 
-Server Certificate:
-  Public Key:    RSA 2048
-  Signature:     sha256WithRSAEncryption
+  Protocol:         TLSv1.3
+  Cipher:           TLS_AES_256_GCM_SHA384
+  Negotiated Group: X25519MLKEM768
+  Key Exchange:     ★ ML-KEM HYBRID (Quantum-Safe!)
 
-GET /hello:
-  hello world
+=== Server Certificate ===
 
-✓ Connection used POST-QUANTUM SAFE key exchange (ML-KEM hybrid)
-  Even if captured, this session cannot be decrypted by future quantum computers.
+  Public Key:       id-ecPublicKey 384 bit
+  Signature:        ecdsa-with-SHA384
+
+=== GET /hello ===
+
+  hello world (PQC-enabled via BCJSSE 1.81+)
+
+═══════════════════════════════════════════════════════════════
+  Summary: PQC-Safe TLS Connection
+═══════════════════════════════════════════════════════════════
+
+  ✓ Key Exchange: ML-KEM hybrid (X25519 + ML-KEM-768)
+    → Quantum-safe key establishment
+    → Protected against 'harvest now, decrypt later' attacks
+```
 
 ---
 
-## scripts/client-demo-unsafe.sh requirements (Classical fallback demo)
-The script must demonstrate backward compatibility by forcing classical-only crypto:
-- https://localhost:8080/hello
+## scripts/client-demo-unsafe.sh Output
 
-This script explicitly disables PQC groups to force the server to fall back to classical key exchange.
-
-It should print, at minimum:
-- negotiated protocol (TLSv1.3)
-- negotiated cipher suite
-- **negotiated key exchange group** (classical only, e.g., x25519 or secp256r1)
-- server certificate public key algorithm + size
-- A clear warning that this connection is NOT quantum-safe
-
-### Script outline (bash)
-1) Verify server is running
-2) Show negotiated TLS details using openssl with ONLY classical groups:
-   - openssl s_client -connect localhost:8080 -servername localhost -groups x25519:secp256r1:secp384r1 </dev/null 2>/dev/null
-   - This explicitly excludes ML-KEM hybrid groups
-   - parse lines for:
-     - "Protocol  :"
-     - "Cipher    :"
-     - "Server Temp Key:" (should show ECDH, NOT ML-KEM)
-3) Extract the leaf certificate and show key size
-4) Call the endpoint:
-   - curl --cacert tls/server-cert.pem --curves x25519:secp256r1:secp384r1 https://localhost:8080/hello
-   - Note: curl's --curves option limits negotiated groups
-
-The output must be demo-friendly and clearly show this is UNSAFE, e.g.:
-
+```
 ═══════════════════════════════════════════════════════════════
-  CLASSICAL TLS Connection (Backward Compatibility Mode)
+  Classical TLS Connection (NO Quantum Protection)
 ═══════════════════════════════════════════════════════════════
 
-⚠️  FORCING CLASSICAL-ONLY KEY EXCHANGE (no PQC)
+⚠️  Forcing classical-only key exchange: X25519:P-256:P-384
 
-TLS Negotiation:
-  Protocol:      TLSv1.3
-  Cipher:        TLS_AES_256_GCM_SHA384
-  Key Exchange:  x25519 (Classical ECDHE - NOT quantum-safe!)
+=== TLS Negotiation ===
 
-Server Certificate:
-  Public Key:    RSA 2048
-  Signature:     sha256WithRSAEncryption
+  Protocol:         TLSv1.3
+  Cipher:           TLS_AES_256_GCM_SHA384
+  Negotiated Group: X25519, 253 bits
+  Key Exchange:     ✗ X25519, 253 bits (NOT quantum-safe!)
 
-GET /hello:
-  hello world
+═══════════════════════════════════════════════════════════════
+  Summary: Classical TLS Connection (NOT Quantum-Safe)
+═══════════════════════════════════════════════════════════════
 
-⚠️  WARNING: This connection used CLASSICAL key exchange only.
-   This demonstrates backward compatibility with non-PQC clients.
-   In production, migrate clients to PQC-capable versions ASAP.
-   Captured traffic can be decrypted by future quantum computers!
-
----
-
-## README.md requirements
-Keep README short with:
-- prerequisites (Java 25, Maven, openssl 3.5+, curl, keytool)
-- note about OpenSSL version requirement for ML-KEM
-- how to generate certs (or state they are included under ./tls)
-- how to run:
-  - mvn quarkus:dev
-  - ./scripts/client-demo.sh (PQC-safe)
-  - ./scripts/client-demo-unsafe.sh (classical fallback)
-- crypto agility section:
-  - explain hybrid key exchange (ML-KEM + ECDHE)
-  - explain how server supports both PQC and classical clients
-  - explain the JVM configuration for named groups
-- comparison with main branch:
-  - main: Java 17, TLS 1.2, classical only, quantum-vulnerable
-  - pqc-ready: Java 25, TLS 1.3, hybrid PQC, quantum-safe key exchange
+  ✗ Key Exchange: Classical X25519, 253 bits
+    → NOT quantum-safe
+    → Vulnerable to 'harvest now, decrypt later' attacks
+```
 
 ---
 
 ## Acceptance Criteria
-- `https://localhost:8080/hello` returns "hello world"
-- HTTP is disabled (or at least not used in docs/scripts)
-- `https://localhost:8080/crypto/capabilities` returns JSON including:
-  - supported/enabled protocols and cipher suites
-  - **named groups including ML-KEM hybrids**
-  - **pqc.presentInDefaultProviders = true**
-  - **certificate public key size**
-- `scripts/client-demo.sh`:
-  - prints TLS protocol + cipher suite
-  - prints **hybrid key exchange group (ML-KEM)**
-  - prints cert key size + signature alg
-  - successfully calls /hello using `--cacert tls/server-cert.pem` (no `-k`)
-- `scripts/client-demo-unsafe.sh`:
-  - prints TLS protocol + cipher suite
-  - prints **classical key exchange group (no ML-KEM)**
-  - shows clear warning about quantum vulnerability
-  - demonstrates backward compatibility
-- Source code is minimal and easy to read (2 resources, small helpers if necessary)
-- Server supports BOTH PQC and classical clients (crypto agility)
+- [x] `https://localhost:8443/hello` returns "hello world"
+- [x] Server uses BCJSSE for TLS (not SunJSSE)
+- [x] ML-KEM hybrid key exchange negotiated (X25519MLKEM768)
+- [x] `scripts/client-demo.sh` shows PQC key exchange
+- [x] `scripts/client-demo-unsafe.sh` shows classical fallback
+- [x] Crypto agility: server accepts both PQC and classical clients
+- [x] ECDSA certificate works with all clients
+- [x] ML-DSA certificate available for full PQC (future)

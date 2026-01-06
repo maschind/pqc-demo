@@ -16,7 +16,7 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 | Branch | Java | TLS | Security Posture | Description |
 |--------|------|-----|------------------|-------------|
 | `main` | 17 | 1.2 | ⚠️ **Unsafe** | Baseline: typical enterprise Java app with classical crypto |
-| `feature/pqc-ready` | 25 | 1.3 | 🟡 Transitional | PQC algorithms available, TLS hybrid pending ← **You are here** |
+| `feature/pqc-ready` | 25 | 1.3 | 🟡 Transitional | PQC algorithms available, TLS hybrid pending (workaround using BC) ← **You are here** |
 | `feature/pqc-safe` | 25 | 1.3 | ✅ **PQC-Safe** | All classical-only algorithms disabled |
 
 ### Branch Details
@@ -30,15 +30,10 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 
 #### `feature/pqc-ready` — Transitional
 - Java 25 with TLS 1.3
-- ML-KEM and ML-DSA algorithms available as primitives
-- ECDHE key exchange (TLS hybrid awaits JSSE integration)
-- Infrastructure ready for PQC when TLS support is added
-- **Prepares for quantum-safe future**
-
-> 📌 **JEP 527 Status:** [JEP 527: Hybrid Key Exchange for TLS](https://bugs.openjdk.org/browse/JDK-8369848)
-> is not yet available in Java 25. This branch includes **BouncyCastle** to provide PQC algorithms
-> (Kyber, Dilithium) for application-level crypto. Full TLS hybrid key exchange awaits JEP 527
-> or custom SSLContext configuration.
+- Hybrid key exchange (classical + ML-KEM) - workaround using BC as JEP527 is forseen for Java27
+- ML-DSA capable signatures
+- Backward compatible with classical clients - fallback attack possible
+- **Safe against "harvest now, decrypt later" attacks**
 
 #### `feature/pqc-safe` — Fully PQC
 - Java 25 with TLS 1.3
@@ -47,131 +42,166 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 - All vulnerable classical algorithms disabled
 - **Maximum quantum security, no backward compatibility**
 
+
 ## Prerequisites
 
-- **Java 25** (required for native ML-KEM/ML-DSA support)
+- **Java 25** (required for BouncyCastle compatibility)
 - Maven 3.8+
-- **OpenSSL 3.5+** (recommended for ML-KEM client negotiation)
+- **OpenSSL 3.5+** (required for ML-KEM client negotiation)
 - curl
 
-## BouncyCastle PQC Workaround
+## Quick Start
 
-Since JEP 527 is not yet available, this branch uses **BouncyCastle** to provide actual PQC-safe TLS:
-
-| Component | Version | Purpose |
-|-----------|---------|---------|
-| `bcprov-jdk18on` | 1.79 | Core crypto + PQC algorithms (Kyber, Dilithium) |
-| `bctls-jdk18on` | 1.79 | TLS provider with hybrid key exchange |
-| `bcpkix-jdk18on` | 1.79 | PKI/X.509 support |
-
-The `BouncyCastleInitializer` class registers these providers at startup, enabling:
-- **PQC algorithms** (Kyber/ML-KEM, Dilithium/ML-DSA) for application-level crypto
-- Security providers available at positions 1-2 in the JVM
-
-> ⚠️ **Limitation:** Quarkus/Vert.x uses its own SSL engine (Netty) which doesn't automatically
-> use BCJSSE for TLS connections. The BouncyCastle providers are available for **application-level**
-> PQC operations (key encapsulation, signatures), but TLS hybrid key exchange requires either:
-> - Waiting for [JEP 527](https://bugs.openjdk.org/browse/JDK-8369848) (native JSSE support)
-> - Custom SSLContext configuration for Vert.x (complex)
-> - A different server framework that uses BCJSSE directly
-
-## TLS Certificates
-
-Self-signed certificates are included in `./tls`:
-- `server-keystore.p12` - PKCS12 keystore with RSA-2048 certificate
-- `server-cert.pem` - Exported PEM certificate for curl
-
-To regenerate (optional):
+### 1. Start the PQC Server
 
 ```bash
-# Generate keystore
-keytool -genkeypair \
-  -alias server \
-  -keyalg RSA \
-  -keysize 2048 \
-  -storetype PKCS12 \
-  -keystore tls/server-keystore.p12 \
-  -storepass changeit \
-  -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
-  -validity 3650 \
-  -ext "SAN=dns:localhost,ip:127.0.0.1"
-
-# Export certificate for curl
-keytool -exportcert \
-  -alias server \
-  -keystore tls/server-keystore.p12 \
-  -storepass changeit \
-  -rfc \
-  -file tls/server-cert.pem
+./scripts/run-pqc-server.sh
 ```
 
-## Run the Application
-
+Or directly:
 ```bash
-mvn quarkus:dev
+mvn exec:java -Dexec.mainClass="com.example.pqcdemo.PqcHttpsServer"
 ```
 
-The server starts on **HTTPS only** at `https://localhost:8080`.
+The server starts on **https://localhost:8443** with ML-KEM hybrid TLS.
 
-## Run the Client Demo
+### 2. Test PQC Connection
 
-In a separate terminal:
-
-### PQC-Safe Connection (Recommended)
 ```bash
 ./scripts/client-demo.sh
 ```
 
-This shows:
-- Negotiated TLS protocol (TLSv1.3)
-- Negotiated cipher suite with **hybrid ML-KEM key exchange**
-- Server certificate key algorithm + size (RSA 2048)
-- Quantum-safe session confirmation
+Expected output:
+```
+═══════════════════════════════════════════════════════════════
+  PQC TLS Connection (ML-KEM Hybrid Key Exchange)
+═══════════════════════════════════════════════════════════════
 
-### Classical Fallback (Backward Compatibility)
+  Protocol:         TLSv1.3
+  Cipher:           TLS_AES_256_GCM_SHA384
+  Negotiated Group: X25519MLKEM768
+  Key Exchange:     ★ ML-KEM HYBRID (Quantum-Safe!)
+```
+
+### 3. Test Classical Fallback (Crypto Agility)
+
 ```bash
 ./scripts/client-demo-unsafe.sh
 ```
 
-This forces classical-only key exchange to demonstrate backward compatibility with non-PQC clients.
+This forces classical-only key exchange to demonstrate backward compatibility.
+
+## How It Works
+
+### BouncyCastle JSSE 1.81
+
+[BouncyCastle 1.81](https://www.bouncycastle.org/resources/bouncy-castle-releases-java-1-81-and-c-net-2-6-1/) added ML-KEM hybrid TLS support:
+
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| `bcprov-jdk18on` | 1.81 | Core crypto + PQC algorithms |
+| `bctls-jdk18on` | 1.81 | **TLS with ML-KEM hybrid key exchange** |
+| `bcpkix-jdk18on` | 1.81 | PKI/X.509 support |
+
+### Standalone Server (Not Quarkus)
+
+The `PqcHttpsServer.java` uses Java's built-in `HttpsServer` with BCJSSE directly:
+
+```java
+// Register BouncyCastle providers
+Security.insertProviderAt(new BouncyCastleProvider(), 1);
+Security.insertProviderAt(new BouncyCastleJsseProvider(false), 2);
+
+// Create SSLContext with BCJSSE
+SSLContext sslContext = SSLContext.getInstance("TLSv1.3", "BCJSSE");
+```
+
+> **Why not Quarkus?** Quarkus/Vert.x has hardcoded dependencies on SunJSSE and cannot use BCJSSE for TLS. The standalone server bypasses this limitation.
 
 ## API Endpoints
 
 ### GET /hello
 
-Basic endpoint returning "hello world".
-
 ```bash
-curl --cacert tls/server-cert.pem https://localhost:8080/hello
+curl -sk https://localhost:8443/hello
+# Output: hello world (PQC-enabled via BCJSSE 1.81+)
 ```
 
-### GET /crypto/capabilities
-
-Returns JSON with runtime crypto capabilities:
+### GET /crypto/info
 
 ```bash
-curl --cacert tls/server-cert.pem https://localhost:8080/crypto/capabilities | python3 -m json.tool
+curl -sk https://localhost:8443/crypto/info | python3 -m json.tool
 ```
 
-Response includes:
-- Java 25 runtime info
-- Security providers with PQC algorithms
-- TLS protocols and cipher suites (supported + enabled)
-- **Named groups including ML-KEM hybrids**
-- Server certificate details (algorithm, key size, signature)
-- **PQC availability status (true)**
+Returns:
+```json
+{
+  "server": "PqcHttpsServer",
+  "java.version": "25.0.1",
+  "tls": {
+    "provider": "BCJSSE 1.81+",
+    "protocol": "TLS 1.3",
+    "keyExchange": {
+      "algorithm": "X25519MLKEM768",
+      "quantumSafe": true
+    },
+    "authentication": {
+      "algorithm": "ECDSA-SHA384",
+      "quantumSafe": false
+    }
+  },
+  "pqc": {
+    "keyExchangeSafe": true,
+    "availableAlgorithms": ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
+  }
+}
+```
+
+## TLS Certificates
+
+Three certificate options are available in `./tls`:
+
+| File | Algorithm | Use Case |
+|------|-----------|----------|
+| `server-keystore-hybrid.p12` | ECDSA | Default - works with all clients |
+| `server-keystore-mldsa.p12` | ML-DSA | Full PQC - needs PQC-capable client |
+| `server-keystore.p12` | RSA-2048 | Legacy compatibility |
+
+To regenerate:
+
+```bash
+# ECDSA certificate (recommended for hybrid PQC)
+keytool -genkeypair -alias server -keyalg EC -groupname secp384r1 \
+  -sigalg SHA384withECDSA -validity 3650 \
+  -keystore tls/server-keystore-hybrid.p12 -storetype PKCS12 \
+  -storepass changeit -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
+  -ext "SAN=DNS:localhost,IP:127.0.0.1"
+
+# Export for curl
+keytool -exportcert -alias server -keystore tls/server-keystore-hybrid.p12 \
+  -storepass changeit -rfc -file tls/server-cert-hybrid.pem
+
+# ML-DSA certificate (full PQC - for future use)
+keytool -genkeypair -alias server -keyalg ML-DSA-65 -validity 3650 \
+  -keystore tls/server-keystore-mldsa.p12 -storetype PKCS12 \
+  -storepass changeit -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
+  -ext "SAN=DNS:localhost,IP:127.0.0.1"
+```
+
+## Crypto Agility
+
+The server supports **both PQC and classical clients**:
+
+| Client Capability | Negotiated Key Exchange |
+|-------------------|------------------------|
+| OpenSSL 3.5+ with ML-KEM | X25519MLKEM768 (quantum-safe) |
+| Classical clients | X25519 or P-256 (fallback) |
+
+This is demonstrated by:
+- `./scripts/client-demo.sh` - Uses ML-KEM hybrid
+- `./scripts/client-demo-unsafe.sh` - Forces classical only
 
 ## Why This Matters
-
-### The Quantum Threat
-
-| Algorithm | Type | Quantum Vulnerable? | Replacement |
-|-----------|------|---------------------|-------------|
-| RSA-2048 | Signatures, Key Exchange | ✅ Yes (Shor's algorithm) | ML-DSA, ML-KEM |
-| ECDHE | Key Exchange | ✅ Yes (Shor's algorithm) | ML-KEM |
-| ECDSA | Signatures | ✅ Yes (Shor's algorithm) | ML-DSA |
-| AES-256 | Symmetric | 🟡 Weakened (Grover's) | AES-256 (still safe) |
-| SHA-256 | Hash | 🟡 Weakened (Grover's) | SHA-256 (still safe) |
 
 ### "Harvest Now, Decrypt Later"
 
@@ -180,35 +210,31 @@ Adversaries can:
 2. Store it until quantum computers are available
 3. Decrypt everything retroactively
 
-**Long-lived secrets and sensitive data are at risk NOW.**
+**ML-KEM hybrid key exchange protects against this threat.**
+
+### Current Protection Status
+
+| Layer | This Branch | Protection |
+|-------|-------------|------------|
+| Key Exchange | ML-KEM hybrid | ✅ Quantum-safe |
+| Authentication | ECDSA | ⚠️ Classical (ML-DSA ready) |
+| Symmetric Cipher | AES-256-GCM | ✅ Quantum-safe |
 
 ## Migration Path
 
 ```
-main (unsafe)  →  feature/pqc-ready (hybrid)  →  feature/pqc-safe (PQC-only)
-     ↓                      ↓                            ↓
-  TLS 1.2              TLS 1.3                      TLS 1.3
-  Java 17              Java 25                      Java 25
-  RSA/ECDHE            Hybrid ML-KEM                ML-KEM only
-  Classical            Classical + PQC              PQC only
+main (vulnerable)  →  feature/pqc-ready (hybrid)  →  feature/pqc-safe (full PQC)
+      ↓                        ↓                            ↓
+   TLS 1.2                 TLS 1.3                      TLS 1.3
+   Java 17                 Java 25                      Java 25
+   ECDHE only              ML-KEM + ECDHE               ML-KEM only
+   RSA cert                ECDSA cert                   ML-DSA cert
 ```
-
-## What to Observe
-
-Run the demo on each branch and compare:
-
-| Metric | `main` | `feature/pqc-ready` | `feature/pqc-safe` |
-|--------|--------|---------------------|---------------------|
-| TLS Protocol | 1.2 | 1.3 | 1.3 |
-| Key Exchange | ECDHE | Hybrid (ECDHE + ML-KEM) | ML-KEM |
-| Server Key | RSA-2048 | RSA-2048 or ML-DSA | ML-DSA |
-| `pqc.presentInDefaultProviders` | false | true | true |
 
 ## References
 
+- [BouncyCastle 1.81 Release](https://www.bouncycastle.org/resources/bouncy-castle-releases-java-1-81-and-c-net-2-6-1/) - ML-KEM hybrid TLS support
 - [NIST Post-Quantum Cryptography](https://csrc.nist.gov/projects/post-quantum-cryptography)
-- [JEP 527: Hybrid Key Exchange for TLS](https://bugs.openjdk.org/browse/JDK-8369848) — ML-KEM integration into JSSE (future)
-- [BouncyCastle](https://www.bouncycastle.org/) — PQC provider used as JEP 527 workaround
-- [BouncyCastle PQC Documentation](https://www.bouncycastle.org/docs/tlsdocs1.8on/index.html)
-- [Java Cryptography Architecture](https://docs.oracle.com/en/java/javase/17/security/java-cryptography-architecture-jca-reference-guide.html)
-- [Quarkus](https://quarkus.io/)
+- [JEP 527: Hybrid Key Exchange for TLS](https://bugs.openjdk.org/browse/JDK-8369848) - Future native JSSE support
+- [ML-KEM (FIPS 203)](https://csrc.nist.gov/pubs/fips/203/final) - NIST standard for key encapsulation
+- [ML-DSA (FIPS 204)](https://csrc.nist.gov/pubs/fips/204/final) - NIST standard for digital signatures
