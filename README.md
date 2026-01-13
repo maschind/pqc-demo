@@ -15,33 +15,27 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 
 | Branch | Java | TLS | Security Posture | Description |
 |--------|------|-----|------------------|-------------|
-| `main` | 17 | 1.2 | ⚠️ **Unsafe** | Baseline: typical enterprise Java app with classical crypto |
+| `main` | 17 | 1.2 | ⚠️ Unsafe | Baseline: typical enterprise Java app with classical crypto |
 | `feature/pqc-ready` | 25 | 1.3 | 🟡 Transitional | PQC algorithms available, TLS hybrid pending (workaround using BC) ← **You are here** |
-| `feature/pqc-safe` | 25 | 1.3 | ✅ **PQC-Safe** | All classical-only algorithms disabled |
+| `feature/pqc-safe` | 25 | 1.3 | ✅ PQC-Safe | **TODO:** All classical-only algorithms disabled |
 
 ### Branch Details
 
-#### `main` — Unsafe Baseline
+#### `main` - Unsafe Baseline
 - Java 17 with TLS 1.2 only
 - RSA-2048 server certificate
 - ECDHE key exchange (secp256r1)
 - Represents a typical enterprise Java 17 application
 - **Vulnerable to "harvest now, decrypt later" quantum attacks**
 
-#### `feature/pqc-ready` — Transitional
+#### `feature/pqc-ready` - Transitional
 - Java 25 with TLS 1.3
 - Hybrid key exchange (classical + ML-KEM) - workaround using BC as JEP527 is forseen for Java27
 - ML-DSA capable signatures
 - Backward compatible with classical clients - fallback attack possible
 - **Safe against "harvest now, decrypt later" attacks**
 
-#### `feature/pqc-safe` — Fully PQC
-- Java 25 with TLS 1.3
-- ML-KEM only key exchange (no classical fallback)
-- ML-DSA only signatures
-- All vulnerable classical algorithms disabled
-- **Maximum quantum security, no backward compatibility**
-
+#### `feature/pqc-ready` - **#TODO**
 
 ## Prerequisites
 
