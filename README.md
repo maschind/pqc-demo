@@ -32,12 +32,8 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 - Backward compatible with classical clients
 - **Safe against future quantum computers**
 
-#### `feature/pqc-safe` — Fully PQC
-- Java 25 with TLS 1.3
-- ML-KEM only key exchange (no classical fallback)
-- ML-DSA only signatures
-- All vulnerable classical algorithms disabled
-- **Maximum quantum security, no backward compatibility**
+#### `feature/pqc-safe` — feature/pqc-ready - **#TODO**
+
 
 ## Prerequisites
 
