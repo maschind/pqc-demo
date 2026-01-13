@@ -12,9 +12,9 @@ A hands-on demonstration of migrating a Java enterprise application from classic
 
 | Branch | Java | TLS | Security Posture | Description |
 |--------|------|-----|------------------|-------------|
-| `main` | 17 | 1.2 | ⚠️ **Unsafe** | Baseline: typical enterprise Java app with classical crypto |
+| `main` | 17 | 1.2 | ⚠️ Unsafe | Baseline: typical enterprise Java app with classical crypto |
 | `feature/pqc-ready` | 25 | 1.3 | 🟡 Transitional | Upgraded runtime with hybrid PQC support |
-| `feature/pqc-safe` | 25 | 1.3 | ✅ **PQC-Safe** | All classical-only algorithms disabled |
+| `feature/pqc-safe` | 25 | 1.3 | ✅ PQC-Safe | **TODO:** All classical-only algorithms disabled |
 
 ### Branch Details
 
