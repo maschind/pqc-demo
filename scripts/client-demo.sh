@@ -9,7 +9,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/util.sh"
 
 SERVER_HOST="${SERVER_HOST:-localhost}"
-SERVER_PORT="${SERVER_PORT:-8080}"
+SERVER_PORT="${SERVER_PORT:-8443}"
 CERT_FILE="$PROJECT_DIR/tls/server-cert.pem"
 
 print_header "Java 17 HTTPS Crypto Demo - TLS Connection Analysis"
@@ -25,7 +25,7 @@ fi
 echo "Checking server availability at https://$SERVER_HOST:$SERVER_PORT ..."
 if ! openssl s_client -connect "$SERVER_HOST:$SERVER_PORT" -servername "$SERVER_HOST" </dev/null 2>/dev/null | grep -q "CONNECTED"; then
     print_error "Server not available at $SERVER_HOST:$SERVER_PORT"
-    print_info "Start the server with: mvn quarkus:dev"
+    print_info "Start the server with: mvn spring-boot:run"
     exit 1
 fi
 print_success "Server is running"
@@ -38,7 +38,6 @@ TLS_OUTPUT=$(echo | openssl s_client -connect "$SERVER_HOST:$SERVER_PORT" -serve
 # Extract protocol
 PROTOCOL=$(echo "$TLS_OUTPUT" | grep -E "Protocol\s*:" | head -1 | sed 's/.*Protocol *: *//')
 if [ -z "$PROTOCOL" ]; then
-    # Try alternate format for different openssl versions
     PROTOCOL=$(echo "$TLS_OUTPUT" | grep -E "^\s+Protocol\s*:" | head -1 | sed 's/.*: *//')
 fi
 
@@ -84,4 +83,4 @@ echo "  Server Key:      ${KEY_ALGO:-unknown} ${KEY_SIZE:-unknown}"
 echo "  Signature:       ${SIG_ALGO:-unknown}"
 echo ""
 print_info "Note: Java 17 default TLS uses classical algorithms only."
-print_info "PQC migration requires Java 21+ or third-party providers."
+print_info "PQC migration requires Java 25+ or third-party providers."

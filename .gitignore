@@ -1,6 +1,5 @@
-# Maven / Quarkus
+# Build output
 target/
-*.log
 
 # IDEs
 .idea/
@@ -9,7 +8,20 @@ target/
 .classpath
 .project
 .settings/
+*.swp
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+hs_err_pid*
+
+# Maven wrapper (if added later)
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/maven-wrapper.jar
+
+# Spring Boot
+*.pid

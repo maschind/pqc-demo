@@ -1,126 +1,305 @@
-# CLAUDE.md — Java 17 Quarkus HTTPS Crypto Demo (Non-PQC)
+# CLAUDE.md — Java 17 Spring Boot 2.7 Enterprise HTTPS Crypto Demo (Non-PQC)
 
-## Goal (5-minute demo, dead simple)
-Build a minimal “enterprise-style” Java 17 Quarkus server that:
-- serves **HTTPS** only using a **self-signed certificate**
+## Goal (5-minute demo)
+Build a **realistic enterprise-style** Java 17 Spring Boot 2.7 server that:
+- serves **HTTPS** only using a **self-signed certificate** on port **8443**
 - exposes:
-  - `GET https://localhost:8080/hello`
-  - `GET https://localhost:8080/crypto/capabilities`
-- uses ONLY standard Java/Quarkus TLS (no custom crypto code, no PQC)
-- includes a script `scripts/client-demo.sh` that shows the **actual TLS crypto** used when querying `/hello`
+  - `GET https://localhost:8443/hello`
+  - `GET https://localhost:8443/crypto/capabilities`
+- uses ONLY standard Java/Spring Boot TLS (no custom crypto code, no PQC)
+- includes a script `scripts/client-demo.sh` that shows the **actual TLS crypto** used
 
-This demo is explicitly about: “What crypto is used today in a typical enterprise Java 17 app, and what key sizes / algorithms are involved.”
+This is the **"before" snapshot** of a typical enterprise Java app — the kind that's been running in production for 5-10 years. The code deliberately uses **verbose, pre-Java-17 enterprise patterns** so that the modernization path toward Java 25 (records, pattern matching, PQC) is visually compelling.
 
 ---
 
 ## Constraints
-- Java: 17
-- Framework: Quarkus (simple REST)
-- TLS: self-signed certificate, local only
-- No custom crypto implementation (no ECDH demo, no HKDF, no AES code, etc.)
-- Prefer clarity over features: smallest possible source code footprint
+- Java: **17** (source/target), but code written in **Java 8/11 enterprise style**
+- Framework: **Spring Boot 2.7.18** (javax.* namespace — pre-Jakarta EE 9)
+- TLS: self-signed certificate, **TLS 1.2 only** (realistic legacy config)
+- No custom crypto implementation
+- Enterprise patterns: layered architecture, verbose POJOs, interface+impl services
 
 ---
 
-## Deliverables
-1) Quarkus app with HTTPS enabled and self-signed cert
-2) Endpoint: `GET /hello` -> `hello world`
-3) Endpoint: `GET /crypto/capabilities` -> JSON showing:
-   - Java runtime info
-   - Security providers
-   - TLS capabilities of the runtime (supported + enabled):
-     - protocols (TLSv1.2/TLSv1.3 etc.)
-     - cipher suites
-     - named groups / supported groups if available
-   - **Server certificate details** (important!):
-     - public key algorithm (RSA/EC)
-     - public key size (e.g., RSA 2048, EC 256)
-     - signature algorithm (e.g., SHA256withRSA)
-     - validity dates
-4) Script `scripts/client-demo.sh` that:
-   - calls `https://localhost:8080/hello` (with proper trust handling)
-   - prints the negotiated TLS details (protocol + cipher suite)
-   - prints server certificate key algorithm + key size
-   - clearly shows: “this is non-PQC classical TLS”
+## Enterprise Legacy Code Patterns
+
+These patterns are **intentionally old-fashioned** to create clear modernization contrast:
+
+| Pattern Used (Legacy) | Modernized Equivalent (Java 25) |
+|---|---|
+| Verbose POJOs: private fields, getters, setters, equals, hashCode, toString | `record` (1 line) |
+| `instanceof` + explicit cast | Pattern matching for `instanceof` |
+| if-else chains for type checks | `switch` expressions with pattern matching |
+| `new ArrayList<>()` + for-loop + `.add()` | `List.of()`, streams, `Stream.toList()` |
+| `javax.*` namespace (Spring Boot 2.7) | `jakarta.*` namespace (Spring Boot 3+) |
+| Field `@Autowired` injection | Constructor injection |
+| Interface + `*Impl` service pattern | Direct `@Service` class |
+| No `var` — fully explicit types everywhere | `var` where appropriate |
+| `new HashMap<>()` + `.put()` chains | `Map.of()`, record constructors |
+| `Logger` boilerplate in every class | Same (but less surrounding boilerplate) |
+| `javax.servlet.Filter` with javax.servlet.* imports | `jakarta.servlet.*` namespace |
+| Custom `X509TrustManager` with `instanceof` + cast for key types | Pattern matching; handle PQC key types (ML-DSA) |
+| `SSLContext.getInstance("TLSv1.2")` — hardcoded protocol | `SSLContext.getInstance("TLS")` — negotiate highest available |
+| `Security.setProperty()` with classical-only algorithm lists | Include PQC named groups (x25519_ml-kem-768) |
+
+---
+
+## Migration Challenges (Java 17 → Java 25)
+
+This section documents the **specific migration blockers** embedded in this codebase and how they relate to typical enterprise scenarios. Each challenge is deliberately present to make the modernization story realistic.
+
+### Challenge 1: javax.* → jakarta.* Namespace Migration
+
+**File:** `filter/RequestLoggingFilter.java`
+
+**What it does:** A servlet filter that logs every HTTP request with timing. Uses `javax.servlet.Filter`, `javax.servlet.http.HttpServletRequest`, etc.
+
+**Why it's hard in enterprise:**
+- Spring Boot 3.x requires `jakarta.servlet.*` — the javax namespace is gone entirely. This is not backward-compatible.
+- A simple search-and-replace of imports works for YOUR code. But every JAR on the classpath that touches the Servlet API must ALSO be Jakarta-compatible. If a single dependency (internal library, vendor SDK, legacy adapter) still references `javax.servlet`, you get `ClassNotFoundException` at runtime.
+- Enterprise apps typically have 50-200 transitive dependencies. Auditing all of them for Jakarta compatibility is the bulk of the migration work.
+- Some proprietary or vendor-provided JARs have no Jakarta version and require replacement or forking.
+
+**Relation to PQC:** Indirect — you can't get to Spring Boot 3 (and its improved TLS 1.3 / PQC defaults) until the namespace migration is done. The namespace is the gate.
+
+### Challenge 2: Hardcoded TLS 1.2 in Custom SSLContext
+
+**File:** `config/SslConfig.java`
+
+**What it does:** Creates a custom `SSLContext` hardcoded to `TLSv1.2` and a custom `X509TrustManager` that wraps the default with audit logging. Configures a `RestTemplate` bean for outbound HTTPS calls.
+
+**Why it's hard in enterprise:**
+- `SSLContext.getInstance("TLSv1.2")` prevents the JVM from negotiating TLS 1.3, which is required for PQC hybrid key exchange (ML-KEM). The fix is `SSLContext.getInstance("TLS")` — but security teams resist because they want explicit protocol control.
+- The custom `TrustManager` inspects certificate chains using `instanceof RSAPublicKey` and `instanceof ECPublicKey`. When Java 25 introduces ML-DSA certificates, these checks don't recognize the new key types — they fall through to keySize=0. Not a crash, but a compliance gap in audit logs.
+- Enterprise security teams often mandate specific TLS configurations. Changing from "TLSv1.2 only" to "TLS 1.3 with PQC" requires security review, penetration testing, and change management approval.
+- Outbound client SSL configuration is copy-pasted across dozens of microservices. Each one must be updated independently.
+
+**Relation to PQC:** Direct — this code is the #1 blocker for PQC key exchange. Even if the JVM supports ML-KEM, hardcoded TLS 1.2 prevents it from being negotiated.
+
+### Challenge 3: Hardcoded Security Properties
+
+**File:** `PqcDemoApplication.java`
+
+**What it does:** Sets `jdk.tls.disabledAlgorithms` and `jdk.tls.namedGroups` via `Security.setProperty()` at application startup. Restricts TLS to classical algorithms only.
+
+**Why it's hard in enterprise:**
+- The `jdk.tls.namedGroups` property explicitly lists classical ECDHE curves (secp256r1, secp384r1, etc.). On Java 25, PQC hybrid groups (e.g., `x25519_ml-kem-768`) exist but won't be negotiated unless added to this list.
+- These properties are often set in the JVM's `java.security` file, which is deployed to every server. Changing it requires coordination across infrastructure, security, and application teams.
+- Enterprises with SOC2/PCI compliance have security policies that dictate exactly which algorithms are allowed. Adding PQC algorithms to the approved list requires policy updates, security reviews, and audit sign-off.
+- If the enterprise uses a FIPS-validated JCE provider (e.g., Bouncy Castle FIPS), PQC algorithms may not be FIPS-certified yet, creating a compliance deadlock.
+
+**Relation to PQC:** Direct — even on Java 25, PQC groups won't be negotiated if the named groups list doesn't include them. This is the "configuration-level" PQC blocker.
+
+### Challenge 4: Language-Level Verbosity (Existing)
+
+**Files:** All `model/*.java` POJOs, `service/*Impl.java`, controllers
+
+**What it does:** Uses verbose Java 8/11 patterns — POJOs with getters/setters/equals/hashCode, `instanceof` + explicit cast, `new ArrayList<>()` + for-loops, field `@Autowired`, interface+impl services.
+
+**Why it's hard in enterprise:**
+- It's not *technically* hard — Records, pattern matching, and `var` are drop-in improvements. But enterprise code has thousands of these patterns across hundreds of files.
+- Automated migration tools (OpenRewrite, IntelliJ refactoring) can handle much of this, but they require validation, testing, and code review for each change.
+- Some patterns (interface+impl services) are enforced by architectural guidelines or framework requirements. Removing them requires policy changes, not just code changes.
+- Teams must agree on the new style — should everything be a Record? When is `var` appropriate? This creates process friction beyond the technical change.
+
+**Relation to PQC:** Indirect — verbose code makes the codebase harder to audit for crypto patterns. When you're searching for "every place we create an SSLContext" to update for PQC, 10,000 lines of boilerplate make the search harder.
+
+### Summary: Migration Dependency Chain
+
+```
+Language modernization (Challenge 4)
+  ↓ enables cleaner code for...
+Namespace migration (Challenge 1: javax → jakarta)
+  ↓ unblocks...
+Framework upgrade (Spring Boot 2.7 → 3.x)
+  ↓ enables...
+TLS configuration update (Challenge 2: TLS 1.2 → 1.3)
+  ↓ enables...
+Security policy update (Challenge 3: add PQC named groups)
+  ↓ enables...
+PQC key exchange and certificates (ML-KEM, ML-DSA)
+```
+
+Each step has its own stakeholders, review process, and risk profile. This is why PQC migration in enterprise takes months, not days.
 
 ---
 
 ## Repository Layout
+```
 .
-├─ CLAUDE.md
-├─ README.md
-├─ pom.xml
-├─ src/main/java/.../
-│  ├─ HelloResource.java
-│  └─ CryptoCapabilitiesResource.java
-├─ src/main/resources/
-│  └─ application.properties
-├─ scripts/
-│  └─ client-demo.sh
-└─ tls/
-   ├─ server-keystore.p12        (generated, can be committed or generated by script)
-   └─ server-cert.pem            (exported PEM for client use)
-
-Keep code minimal: 2 resources only.
+├── CLAUDE.md
+├── README.md
+├── pom.xml
+├── src/main/java/com/example/pqcdemo/
+│   ├── PqcDemoApplication.java                    (+ Security.setProperty hardening)
+│   ├── controller/
+│   │   ├── HelloController.java
+│   │   └── CryptoCapabilitiesController.java
+│   ├── filter/
+│   │   └── RequestLoggingFilter.java               (javax.servlet.Filter — namespace blocker)
+│   ├── service/
+│   │   ├── CryptoCapabilitiesService.java          (interface)
+│   │   └── CryptoCapabilitiesServiceImpl.java      (implementation)
+│   ├── model/
+│   │   ├── CryptoCapabilitiesResponse.java         (top-level response POJO)
+│   │   ├── RuntimeInfo.java                        (POJO)
+│   │   ├── CertificateInfo.java                    (POJO)
+│   │   └── SecurityProviderInfo.java               (POJO)
+│   └── config/
+│       ├── KeystoreConfig.java                     (@Configuration)
+│       └── SslConfig.java                          (custom TrustManager + TLS 1.2 lock)
+├── src/main/resources/
+│   └── application.properties
+├── scripts/
+│   ├── client-demo.sh
+│   └── util.sh
+└── tls/
+    ├── server-keystore.p12
+    └── server-cert.pem
+```
 
 ---
 
-## HTTPS / Self-signed certificate requirements
-Use a PKCS12 keystore and configure Quarkus HTTPS.
+## Build Configuration (pom.xml)
 
-### Keystore generation (preferred: checked into repo under ./tls)
-Generate once (or provide a helper section in README):
+Spring Boot 2.7.18 with:
+- `spring-boot-starter-parent` 2.7.18
+- `spring-boot-starter-web` (embedded Tomcat)
+- `spring-boot-starter-test` (test scope)
+- `maven.compiler.source` / `target` = 17
+- No additional dependencies (Jackson is included via starter-web)
 
-- create PKCS12 keystore:
-  keytool -genkeypair \
-    -alias server \
-    -keyalg RSA \
-    -keysize 2048 \
-    -storetype PKCS12 \
-    -keystore tls/server-keystore.p12 \
-    -storepass changeit \
-    -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
-    -validity 3650 \
-    -ext "SAN=dns:localhost,ip:127.0.0.1"
+---
 
-- export cert to PEM for curl:
-  keytool -exportcert \
-    -alias server \
-    -keystore tls/server-keystore.p12 \
-    -storepass changeit \
-    -rfc \
-    -file tls/server-cert.pem
+## HTTPS / Self-signed certificate
 
-NOTE: Use RSA-2048 for maximum “enterprise typical” familiarity. (EC is also ok, but RSA makes key size discussions straightforward.)
+### Keystore (checked into repo under ./tls)
 
-### Quarkus HTTPS configuration (application.properties)
-- Set HTTPS port to 8080 for the demo
-- Disable HTTP (or at least do not bind it)
+```bash
+keytool -genkeypair \
+  -alias server \
+  -keyalg RSA \
+  -keysize 2048 \
+  -storetype PKCS12 \
+  -keystore tls/server-keystore.p12 \
+  -storepass changeit \
+  -dname "CN=localhost, OU=Dev, O=Demo, L=Zurich, ST=ZH, C=CH" \
+  -validity 3650 \
+  -ext "SAN=dns:localhost,ip:127.0.0.1"
 
-Required properties:
-- quarkus.http.ssl-port=8080
-- quarkus.http.insecure-requests=disabled
-- quarkus.http.ssl.certificate.key-store-file=tls/server-keystore.p12
-- quarkus.http.ssl.certificate.key-store-password=changeit
-- quarkus.http.ssl.certificate.key-store-file-type=PKCS12
+keytool -exportcert \
+  -alias server \
+  -keystore tls/server-keystore.p12 \
+  -storepass changeit \
+  -rfc \
+  -file tls/server-cert.pem
+```
 
-Optional (keep default if unsure):
-- do NOT hardcode cipher suites unless necessary; default is fine for “enterprise default libs”
-- if you set protocols, allow TLSv1.3 and TLSv1.2:
-  quarkus.http.ssl.protocols=TLSv1.3,TLSv1.2
+RSA-2048 for maximum "enterprise typical" familiarity.
+
+### Spring Boot HTTPS configuration (application.properties)
+
+```properties
+server.port=8443
+server.ssl.key-store=file:tls/server-keystore.p12
+server.ssl.key-store-password=changeit
+server.ssl.key-store-type=PKCS12
+server.ssl.enabled-protocols=TLSv1.2
+```
+
+- Port **8443** (enterprise-standard HTTPS)
+- **TLS 1.2 only** — intentionally legacy; contrasts with TLS 1.3 on modernized branch
+- No cipher suite restrictions (use JVM defaults)
+- HTTP is not exposed (Spring Boot only binds HTTPS when SSL is configured)
+
+---
+
+## Java Source Code Spec
+
+### PqcDemoApplication.java
+Standard `@SpringBootApplication` main class.
+
+### controller/HelloController.java
+- `@RestController`
+- `@GetMapping("/hello")` returns plain text `"hello world"`
+
+### controller/CryptoCapabilitiesController.java
+- `@RestController`
+- `@GetMapping("/crypto/capabilities")` delegates to service, returns JSON
+- Uses field `@Autowired` (legacy pattern)
+- Has a `private static final Logger` (SLF4J)
+
+### service/CryptoCapabilitiesService.java
+- Interface with single method: `CryptoCapabilitiesResponse getCapabilities()`
+
+### service/CryptoCapabilitiesServiceImpl.java
+- `@Service` implementing the interface
+- Uses field `@Autowired` for `KeystoreConfig`
+- Contains all crypto introspection logic:
+  - `SSLContext.getDefault()` for TLS protocols/ciphers
+  - `KeyStore` loading for certificate details
+  - `Security.getProviders()` for provider listing
+  - PQC algorithm scan across all providers
+- Written in verbose style:
+  - Explicit `for` loops, no streams
+  - `instanceof` + cast (no pattern matching)
+  - `new ArrayList<>()` with `.add()` calls
+  - Full try-catch blocks
+
+### model/CryptoCapabilitiesResponse.java
+Top-level response POJO containing:
+- `RuntimeInfo runtime`
+- `List<SecurityProviderInfo> securityProviders`
+- `Map<String, Object> tls` (TLS details as map — protocols, ciphers, named groups)
+- `CertificateInfo serverCertificate`
+- `Map<String, Object> pqc` (PQC status as map)
+
+Full POJO: no-arg constructor, all-args constructor, getters, setters, toString, equals, hashCode.
+
+### model/RuntimeInfo.java
+Fields: `javaVersion`, `javaVendor`, `javaVmName`, `osName`, `osArch` (all String).
+Full POJO with all boilerplate.
+
+### model/CertificateInfo.java
+Fields: `subject`, `issuer`, `notBefore`, `notAfter`, `publicKeyAlgorithm` (String), `publicKeySizeBits` (int), `signatureAlgorithm` (String), `san` (List<String>).
+Full POJO with all boilerplate.
+
+### model/SecurityProviderInfo.java
+Fields: `name`, `version`, `info` (all String).
+Full POJO with all boilerplate.
+
+### config/KeystoreConfig.java
+- `@Configuration` class
+- Reads keystore path, password, alias from `application.properties` via `@Value`
+- Provides getter methods for the service to use
+
+### config/SslConfig.java
+- `@Configuration` class
+- Creates hardcoded `SSLContext.getInstance("TLSv1.2")` (blocks PQC key exchange)
+- Wraps default `X509TrustManager` with audit logging (`AuditTrustManager` inner class)
+  - Logs certificate chain details using `instanceof` + cast (RSAPublicKey, ECPublicKey)
+  - Does not recognize PQC key types — migration gap
+- Exposes a `RestTemplate` `@Bean` configured with the custom SSLContext
+
+### filter/RequestLoggingFilter.java
+- `javax.servlet.Filter` implementation (namespace migration blocker)
+- `@Component` + `@Order(1)` for auto-registration
+- Logs: HTTP method, URI, response status, duration in ms
+- Uses `javax.servlet.http.HttpServletRequest` / `HttpServletResponse`
 
 ---
 
 ## REST API Spec
 
 ### GET /hello
-- Response: plain text: "hello world"
-- Must be served over HTTPS only:
-  https://localhost:8080/hello
+- Response: `text/plain`: `hello world`
+- Served over HTTPS only: `https://localhost:8443/hello`
 
 ### GET /crypto/capabilities
-Return JSON with the following structure (fields must exist even if empty):
+Return JSON (same structure as before):
 
+```json
 {
   "runtime": {
     "javaVersion": "...",
@@ -134,14 +313,14 @@ Return JSON with the following structure (fields must exist even if empty):
   ],
   "tls": {
     "defaultSslContextProvider": "...",
-    "supportedProtocols": [ "TLSv1.3", "TLSv1.2", ... ],
-    "enabledProtocols": [ ... ],
-    "supportedCipherSuites": [ ... ],
-    "enabledCipherSuites": [ ... ],
+    "supportedProtocols": ["TLSv1.2", ...],
+    "enabledProtocols": [...],
+    "supportedCipherSuites": [...],
+    "enabledCipherSuites": [...],
     "namedGroups": {
-      "supported": [ ... ],
-      "enabled": [ ... ],
-      "note": "If named groups cannot be read portably in Java 17, return empty arrays with a note."
+      "supported": [],
+      "enabled": [],
+      "note": "..."
     }
   },
   "serverCertificate": {
@@ -149,70 +328,40 @@ Return JSON with the following structure (fields must exist even if empty):
     "issuer": "...",
     "notBefore": "...",
     "notAfter": "...",
-    "publicKeyAlgorithm": "RSA|EC|...",
+    "publicKeyAlgorithm": "RSA",
     "publicKeySizeBits": 2048,
-    "signatureAlgorithm": "...",
-    "san": [ "DNS:localhost", "IP:127.0.0.1", ... ]
+    "signatureAlgorithm": "SHA256withRSA",
+    "san": ["DNS:localhost", "IP:127.0.0.1"]
   },
   "pqc": {
     "presentInDefaultProviders": false,
     "note": "Java 17 default providers do not include standardized PQC algorithms (e.g., ML-KEM/ML-DSA)."
   }
 }
+```
 
 Implementation notes:
-- TLS protocols/ciphers:
-  - Use SSLContext.getDefault()
-  - Use SSLParameters from SSLSocketFactory / SSLServerSocketFactory to read supported/enabled.
-- Named groups:
-  - Java’s supported groups can be tricky and provider-dependent.
-  - Try reading system properties such as:
-    - "jdk.tls.namedGroups" (may be unset)
-  - If not reliably available, return empty arrays and a note.
-- Server certificate:
-  - Load from the same keystore configured for Quarkus:
-    - open tls/server-keystore.p12
-    - read cert for alias "server"
-  - Determine key size:
-    - RSA: ((RSAPublicKey) key).getModulus().bitLength()
-    - EC: ((ECPublicKey) key).getParams().getCurve().getField().getFieldSize()
-
-Keep the code small and readable.
+- TLS info: `SSLContext.getDefault()` + `SSLParameters` from supported/default
+- Named groups: try `jdk.tls.namedGroups` system property; return empty arrays with note if unavailable
+- Certificate: load from keystore via `KeystoreConfig` properties
+- Key size: `((RSAPublicKey) key).getModulus().bitLength()` or `((ECPublicKey) key).getParams().getCurve().getField().getFieldSize()`
 
 ---
 
-## scripts/client-demo.sh requirements
-The script must show what crypto is used when querying:
-- https://localhost:8080/hello
+## scripts/client-demo.sh
 
-It should print, at minimum:
-- negotiated protocol (e.g., TLSv1.3)
-- negotiated cipher suite (e.g., TLS_AES_128_GCM_SHA256)
-- server certificate public key algorithm + size (e.g., RSA 2048)
-- server certificate signature algorithm
-- and then perform the actual GET /hello successfully.
+Must show the crypto used when querying `https://localhost:8443/hello`:
+- Negotiated protocol (expect: TLSv1.2)
+- Negotiated cipher suite (e.g., ECDHE-RSA-AES128-GCM-SHA256)
+- Server cert public key algorithm + size (RSA 2048)
+- Server cert signature algorithm (sha256WithRSAEncryption)
+- Successful GET /hello using `--cacert tls/server-cert.pem` (no `-k`)
 
-### Script outline (bash)
-1) Verify server is running
-2) Show negotiated TLS details using openssl:
-   - openssl s_client -connect localhost:8080 -servername localhost -showcerts </dev/null 2>/dev/null
-   - parse lines for:
-     - "Protocol  :" (or equivalent)
-     - "Cipher    :" (or "Ciphersuite:" depending on openssl version)
-3) Extract the leaf certificate and show key size:
-   - pipe cert to: openssl x509 -noout -text
-   - parse:
-     - "Public-Key:" size
-     - "Signature Algorithm:"
-4) Call the endpoint:
-   - curl --cacert tls/server-cert.pem https://localhost:8080/hello
-   - Must succeed without -k (no insecure skip). Using the exported PEM is the point.
-
-The output must be demo-friendly and short, e.g.:
-
+Output format:
+```
 TLS Negotiation:
-  Protocol: TLSv1.3
-  Cipher: TLS_AES_128_GCM_SHA256
+  Protocol: TLSv1.2
+  Cipher: ECDHE-RSA-AES128-GCM-SHA256
 
 Server Certificate:
   Public Key: RSA 2048
@@ -220,30 +369,38 @@ Server Certificate:
 
 GET /hello:
   hello world
+```
 
 ---
 
-## README.md requirements
-Keep README short with:
-- prerequisites (Java 17, Maven, openssl, curl, keytool)
-- how to generate certs (or state they are included under ./tls)
-- how to run:
-  - mvn quarkus:dev
-  - ./scripts/client-demo.sh
-- one “migration hook” section:
-  - emphasize key sizes and classical algorithms
-  - explain: Java 17 uses classical TLS; PQ requires upgrade/provider/stack changes later
+## README.md
+
+Keep short:
+- Prerequisites: Java 17, Maven 3.8+, OpenSSL, curl
+- Certs are included under `./tls` (with regeneration instructions)
+- Run: `mvn spring-boot:run`
+- Demo: `./scripts/client-demo.sh`
+- Branch structure table (main only for now; future branches for PQC migration)
+- "Why this matters" section on quantum threat and migration path
 
 ---
 
 ## Acceptance Criteria
-- `https://localhost:8080/hello` returns "hello world"
-- HTTP is disabled (or at least not used in docs/scripts)
-- `https://localhost:8080/crypto/capabilities` returns JSON including:
-  - supported/enabled protocols and cipher suites
-  - **certificate public key size**
+- `https://localhost:8443/hello` returns `hello world`
+- HTTP is not exposed
+- `https://localhost:8443/crypto/capabilities` returns full JSON with:
+  - supported/enabled protocols (TLS 1.2 only)
+  - cipher suites
+  - certificate details with public key size
+  - PQC status (false)
 - `scripts/client-demo.sh`:
-  - prints TLS protocol + cipher suite
-  - prints cert key size + signature alg
-  - successfully calls /hello using `--cacert tls/server-cert.pem` (no `-k`)
-- Source code is minimal and easy to read (2 resources, small helpers if necessary)
+  - prints TLS 1.2 protocol + cipher suite
+  - prints cert key size (RSA 2048) + signature algorithm
+  - calls /hello with `--cacert` (no `-k`)
+- Code uses enterprise legacy patterns throughout (verbose POJOs, interface+impl, field injection, no var/records/pattern matching)
+- Migration blockers are present and documented:
+  - `javax.servlet.Filter` in RequestLoggingFilter (namespace blocker)
+  - Hardcoded `SSLContext.getInstance("TLSv1.2")` in SslConfig (PQC protocol blocker)
+  - `Security.setProperty()` with classical-only algorithms in PqcDemoApplication (PQC config blocker)
+  - Custom `X509TrustManager` with `instanceof` checks that don't handle PQC key types
+- ~12 Java source files in layered package structure
