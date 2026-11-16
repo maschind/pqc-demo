@@ -1,0 +1,131 @@
+# OpenShift Dev Spaces workspace for pqc-demo (Java 17 / Spring Boot 2.7 / Maven).
+#
+# Start: Dev Spaces dashboard -> "Create Workspace" -> paste this repo's Git URL.
+# Dev Spaces picks up this devfile.yaml from the repo root automatically.
+#
+# Principles (see https://github.com/maschind/opinionated-dev-spaces):
+#   - bespoke:    one purpose-built image for this project (devspaces-image/Containerfile)
+#   - disposable: no runtime downloads or manual setup; delete and recreate any time
+#   - in git:     all workspace configuration lives here, next to the code
+#   - frugal:     small requests, capped limits; storage strategy is left to the cluster
+#
+# Optional: AI credentials come from a per-user Secret (see ai-secrets.example.yaml).
+schemaVersion: 2.3.0
+metadata:
+  name: pqc-demo
+  displayName: PQC Demo - Java 17 / Spring Boot 2.7
+  description: Legacy enterprise HTTPS crypto demo (TLS 1.2, RSA-2048) with OpenJDK 17, Maven 3.9, opencode and Claude Code.
+  language: Java
+  projectType: Spring Boot
+  tags: ["Java", "Java 17", "Maven", "Spring Boot", "TLS", "opencode", "Claude Code"]
+  version: 1.0.0
+
+components:
+  # First container = Che Code editor is injected here
+  - name: tools
+    container:
+      # Built from devspaces-image/Containerfile. Use an immutable tag; bump on rebuild.
+      image: quay.io/maschind/pqc-demo-devspaces:1.0.0
+      memoryRequest: 1Gi
+      memoryLimit: 6Gi      # Maven + Spring Boot app + Java language server + AI CLIs
+      cpuRequest: 100m
+      cpuLimit: "4"
+      mountSources: true
+      env:
+        - name: OPENCODE_CONFIG
+          value: $(PROJECT_SOURCE)/opencode.json
+      volumeMounts:
+        - name: m2
+          path: /home/user/.m2
+      endpoints:
+        # The app terminates TLS itself (self-signed, TLS 1.2) - that IS the demo.
+        # Not routed through the Dev Spaces gateway (it would re-terminate TLS);
+        # use the "demo" command / curl from the workspace terminal instead.
+        - name: https-app
+          targetPort: 8443
+          protocol: https
+          exposure: none
+        - name: debug
+          targetPort: 5005
+          protocol: tcp
+          exposure: none
+
+  # Maven local repository, survives workspace restarts
+  - name: m2
+    volume:
+      size: 2Gi
+
+commands:
+  - id: build
+    exec:
+      label: "1. Build (mvn package)"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: mvn -B -ntp package -DskipTests
+      group:
+        kind: build
+        isDefault: true
+
+  - id: test
+    exec:
+      label: "2. Test (mvn test)"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: mvn -B -ntp test
+      group:
+        kind: test
+        isDefault: true
+
+  - id: run
+    exec:
+      label: "3. Run app on https://localhost:8443"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: mvn -B -ntp spring-boot:run
+      group:
+        kind: run
+        isDefault: true
+
+  - id: debug
+    exec:
+      label: "4. Debug app (JDWP on port 5005)"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: >-
+        mvn -B -ntp spring-boot:run
+        -Dspring-boot.run.jvmArguments="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005"
+      group:
+        kind: debug
+        isDefault: true
+
+  - id: demo
+    exec:
+      label: "5. TLS demo (scripts/client-demo.sh)"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: ./scripts/client-demo.sh
+      group:
+        kind: run
+
+  - id: capabilities
+    exec:
+      label: "6. Show /crypto/capabilities"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: curl -s --cacert tls/server-cert.pem https://localhost:8443/crypto/capabilities | jq .
+      group:
+        kind: run
+
+  - id: opencode
+    exec:
+      label: "AI: Start opencode"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: opencode
+
+  - id: claude
+    exec:
+      label: "AI: Start Claude Code (CLI)"
+      component: tools
+      workingDir: ${PROJECT_SOURCE}
+      commandLine: claude

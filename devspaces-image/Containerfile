@@ -1,0 +1,79 @@
+# Bespoke OpenShift Dev Spaces workspace image for the pqc-demo project.
+#
+# Contains only what this project needs (no kitchen-sink UDI):
+#   - OpenJDK 17 (devel) + Maven 3.9            -> build/run the Spring Boot 2.7 app
+#   - openssl, curl, git                        -> scripts/client-demo.sh
+#   - opencode + Claude Code CLIs (pinned)      -> AI tooling, preinstalled = fast start
+#   - opencode + Claude Code VS Code .vsix      -> installed by Che Code via DEFAULT_EXTENSIONS,
+#                                                  independent of the cluster's Open VSX registry
+#
+# Runs with the arbitrary UID that OpenShift assigns (GID 0), see entrypoint.sh.
+#
+# Build (multi-arch):  see devspaces-image/README.md
+
+FROM registry.access.redhat.com/ubi9/ubi:latest
+
+ARG TARGETARCH
+ARG OPENCODE_VERSION=1.19.5
+ARG CLAUDE_CODE_VERSION=2.1.325
+ARG CLAUDE_EXT_VERSION=2.1.325
+ARG OPENCODE_EXT_VERSION=1.0.0
+ARG OPENVSX_URL=https://open-vsx.org
+
+LABEL name="pqc-demo-devspaces" \
+      summary="Dev Spaces workspace image for pqc-demo (Java 17, Maven 3.9, opencode, Claude Code)" \
+      description="Bespoke UBI9 workspace image: OpenJDK 17, Maven 3.9, OpenSSL, opencode and Claude Code" \
+      io.openshift.tags="devspaces,java,java17,maven,opencode,claude-code" \
+      org.opencontainers.image.source="https://github.com/maschind/pqc-demo"
+
+USER 0
+
+RUN dnf -y module enable maven:3.9 nodejs:22 \
+ && dnf -y install --setopt=install_weak_deps=False --nodocs \
+      java-17-openjdk-devel maven-openjdk17 nodejs npm \
+      git openssl procps-ng which jq tar gzip unzip findutils less vim-minimal bash-completion \
+ && dnf clean all && rm -rf /var/cache/dnf /var/cache/yum
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk \
+    HOME=/home/user \
+    DISABLE_AUTOUPDATER=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=true \
+    DEFAULT_EXTENSIONS="/opt/vsix/claude-code.vsix;/opt/vsix/opencode.vsix"
+
+# AI CLIs (native binaries) into /opt - outside $HOME, which Dev Spaces may overlay with a volume.
+# The platform packages are installed directly with --ignore-scripts (npm still verifies integrity):
+# the wrapper packages' postinstall picks a binary based on the *build host* CPU (AVX2 probe),
+# which makes the image non-portable. amd64 uses opencode's "baseline" build -> runs on any x86-64 CPU.
+# Node.js stays in the image for MCP servers started via npx.
+RUN case "${TARGETARCH:-amd64}" in \
+      amd64) OC=opencode-linux-x64-baseline;  CC=@anthropic-ai/claude-code-linux-x64 ;; \
+      arm64) OC=opencode-linux-arm64;         CC=@anthropic-ai/claude-code-linux-arm64 ;; \
+      *) echo "unsupported arch ${TARGETARCH}"; exit 1 ;; esac \
+ && export npm_config_cache=/tmp/npm-cache \
+ && npm install -g --prefix /opt/ai-tools --ignore-scripts --no-fund --no-audit --no-update-notifier \
+      "${OC}@${OPENCODE_VERSION}" "${CC}@${CLAUDE_CODE_VERSION}" \
+ && ln -s "/opt/ai-tools/lib/node_modules/${OC}/bin/opencode" /usr/local/bin/opencode \
+ && ln -s "/opt/ai-tools/lib/node_modules/${CC}/claude" /usr/local/bin/claude \
+ && rm -rf /tmp/npm-cache /home/user/.npm \
+ && test -x "$(readlink -f /usr/local/bin/opencode)" && test -x "$(readlink -f /usr/local/bin/claude)"
+# (not executed here: the Bun-compiled binaries crash under qemu when cross-building amd64 on arm64)
+
+# VS Code extensions (Claude Code is platform-specific)
+RUN case "${TARGETARCH:-amd64}" in amd64) P=linux-x64 ;; arm64) P=linux-arm64 ;; *) echo "unsupported arch ${TARGETARCH}"; exit 1 ;; esac \
+ && mkdir -p /opt/vsix \
+ && curl -fsSL -o /opt/vsix/claude-code.vsix \
+      "$(curl -fsSL ${OPENVSX_URL}/api/Anthropic/claude-code/${P}/${CLAUDE_EXT_VERSION} | jq -r .files.download)" \
+ && curl -fsSL -o /opt/vsix/opencode.vsix \
+      "$(curl -fsSL ${OPENVSX_URL}/api/sst-dev/opencode/${OPENCODE_EXT_VERSION} | jq -r .files.download)" \
+ && unzip -tq /opt/vsix/claude-code.vsix && unzip -tq /opt/vsix/opencode.vsix
+
+# Arbitrary-UID support: home + /etc/passwd writable by GID 0
+COPY --chmod=0755 entrypoint.sh /entrypoint.sh
+RUN mkdir -p /home/user /projects \
+ && chgrp -R 0 /home/user /projects && chmod -R g=u /home/user /projects \
+ && chmod g+w /etc/passwd
+
+USER 1001
+WORKDIR /projects
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["tail", "-f", "/dev/null"]
