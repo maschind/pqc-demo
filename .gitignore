@@ -4,7 +4,9 @@ target/
 # IDEs
 .idea/
 *.iml
-.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 .classpath
 .project
 .settings/
@@ -25,3 +27,6 @@ hs_err_pid*
 
 # Spring Boot
 *.pid
+
+# Dev Spaces secrets (never commit)
+ai-secrets.yaml

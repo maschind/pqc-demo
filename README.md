@@ -68,7 +68,20 @@ Language modernization (Records, pattern matching, var)
 
 Each step has its own stakeholders, review process, and risk profile. This is why PQC migration in enterprise takes months, not days.
 
-## Prerequisites
+## Run in OpenShift Dev Spaces (zero setup)
+
+In the Dev Spaces dashboard choose **Create Workspace** and paste this repository's Git URL
+(or open `https://<devspaces-host>/#https://github.com/maschind/pqc-demo`).
+The workspace is defined by [`devfile.yaml`](devfile.yaml) and uses a purpose-built image
+([`devspaces-image/`](devspaces-image/)) with OpenJDK 17, Maven 3.9, OpenSSL, opencode and Claude Code.
+
+In the workspace, run the devfile tasks (Terminal → Run Task → devfile): **Build**, **Run app**, then **TLS demo**.
+
+Optional AI credentials (OpenRouter for opencode, or Anthropic/Vertex for Claude Code) come from a
+per-user Secret. Copy [`ai-secrets.example.yaml`](ai-secrets.example.yaml) to `ai-secrets.yaml` (git-ignored), fill it in, and run
+`oc apply -n <username>-devspaces -f ai-secrets.yaml`. Without the Secret the workspace still builds and runs the demo.
+
+## Prerequisites (local)
 
 - Java 17
 - Maven 3.8+
